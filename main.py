@@ -1,37 +1,52 @@
 import sys
 import random
 import sqlite3
-import json
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QTextEdit, QComboBox,
                              QLabel, QMessageBox, QTabWidget, QLineEdit)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont, QIcon
-import requests
+from PyQt6.QtGui import QFont
+from openai import OpenAI
 
 
-# База данных христианских текстов
+# База данных: synodal.sqlite для текстов, christian_texts.db для заповедей
 class BibleDatabase:
     def __init__(self):
-        self.conn = sqlite3.connect('christian_texts.db')
-        self.cursor = self.conn.cursor()
+        # Подключение к synodal.sqlite (синодальный перевод)
+        self.conn_synodal = sqlite3.connect('synodal.sqlite')
+        self.cursor_synodal = self.conn_synodal.cursor()
+
+        # Подключение к christian_texts.db (заповеди и старые данные)
+        self.conn_local = sqlite3.connect('christian_texts.db')
+        self.cursor_local = self.conn_local.cursor()
+
+        # Создаём таблицы для заповедей, если их нет
         self.create_tables()
         self.populate_initial_data()
 
-    def create_tables(self):
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS texts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                category TEXT,
-                book TEXT,
-                chapter INTEGER,
-                verse INTEGER,
-                text TEXT,
-                explanation TEXT
-            )
-        ''')
+        # Список названий книг синодального перевода (66 книг)
+        self.book_names = [
+            # Ветхий Завет (1-39)
+            "Бытие", "Исход", "Левит", "Числа", "Второзаконие",
+            "Иисус Навин", "Судьи", "Руфь", "1 Царств", "2 Царств",
+            "3 Царств", "4 Царств", "1 Паралипоменон", "2 Паралипоменон", "Ездра",
+            "Неемия", "Есфирь", "Иов", "Псалтирь", "Притчи",
+            "Екклесиаст", "Песнь Песней", "Исаия", "Иеремия", "Плач Иеремии",
+            "Иезекииль", "Даниил", "Осия", "Иоиль", "Амос",
+            "Авдий", "Иона", "Михей", "Наум", "Аввакум",
+            "Софония", "Аггей", "Захария", "Малахия",
+            # Новый Завет (40-66)
+            "Матфея", "Марка", "Луки", "Иоанна", "Деяния",
+            "Иакова", "1 Петра", "2 Петра", "1 Иоанна", "2 Иоанна",
+            "3 Иоанна", "Иуды", "Римлянам", "1 Коринфянам", "2 Коринфянам",
+            "Галатам", "Ефесянам", "Филиппийцам", "Колоссянам", "1 Фессалоникийцам",
+            "2 Фессалоникийцам", "1 Тимофею", "2 Тимофею", "Титу", "Филимону",
+            "Евреям", "Откровение"
+        ]
 
-        self.cursor.execute('''
+    def create_tables(self):
+        # Таблица для заповедей (только в локальной БД)
+        self.cursor_local.execute('''
             CREATE TABLE IF NOT EXISTS commandments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 category TEXT,
@@ -39,114 +54,105 @@ class BibleDatabase:
                 reference TEXT
             )
         ''')
-        self.conn.commit()
+        self.conn_local.commit()
 
     def populate_initial_data(self):
-        # Проверяем, есть ли уже данные
-        self.cursor.execute("SELECT COUNT(*) FROM texts")
-        if self.cursor.fetchone()[0] == 0:
-            initial_texts = [
-                ('Ветхий Завет', 'Бытие', 1, 1, 'В начале сотворил Бог небо и землю.', 'Начало творения мира'),
-                ('Ветхий Завет', 'Псалтирь', 22, 1, 'Господь - Пастырь мой; я ни в чем не буду нуждаться.',
-                 'Господь заботится о нас'),
-                ('Новый Завет', 'От Иоанна', 3, 16,
-                 'Ибо так возлюбил Бог мир, что отдал Сына Своего Единородного, дабы всякий верующий в Него, не погиб, но имел жизнь вечную.',
-                 'Любовь Бога к людям'),
-                ('Ветхий Завет', 'Исход', 20, 3, 'Да не будет у тебя других богов пред лицем Моим.', 'Первая заповедь'),
-                ('Новый Завет', 'От Матфея', 5, 3, 'Блаженны нищие духом, ибо их есть Царство Небесное.',
-                 'Нагорная проповедь'),
-                ('Новый Завет', 'От Матфея', 22, 37,
-                 'Возлюби Господа Бога твоего всем сердцем твоим и всею душею твоею и всем разумением твоим.',
-                 'Великая заповедь'),
-            ]
-
-            for text in initial_texts:
-                self.cursor.execute('''
-                    INSERT INTO texts (category, book, chapter, verse, text, explanation)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', text)
-
+        self.cursor_local.execute("SELECT COUNT(*) FROM commandments")
+        if self.cursor_local.fetchone()[0] == 0:
             initial_commandments = [
                 ('Десять заповедей', 'Не убивай.', 'Исход 20:13'),
                 ('Десять заповедей', 'Не прелюбодействуй.', 'Исход 20:14'),
                 ('Десять заповедей', 'Не кради.', 'Исход 20:15'),
                 ('Десять заповедей', 'Не произноси ложного свидетельства на ближнего твоего.', 'Исход 20:16'),
                 ('Заповеди Иисуса', 'Любите врагов ваших, благословляйте проклинающих вас.', 'Матфея 5:44'),
-                (
-                'Заповеди Иисуса', 'Итак во всем, как хотите, чтобы с вами поступали люди, так поступайте и вы с ними.',
-                'Матфея 7:12'),
+                ('Заповеди Иисуса', 'Итак во всем, как хотите, чтобы с вами поступали люди, так поступайте и вы с ними.', 'Матфея 7:12'),
             ]
 
             for cmd in initial_commandments:
-                self.cursor.execute('''
+                self.cursor_local.execute('''
                     INSERT INTO commandments (category, text, reference)
                     VALUES (?, ?, ?)
                 ''', cmd)
-
-            self.conn.commit()
+            self.conn_local.commit()
 
     def get_random_scripture(self):
-        self.cursor.execute('''
-            SELECT category, book, chapter, verse, text, explanation 
-            FROM texts ORDER BY RANDOM() LIMIT 1
-        ''')
-        return self.cursor.fetchone()
+        try:
+            # Предполагается, что таблица называется "bible" с полями:
+            # book (INT), chapter (INT), verse (INT), text (TEXT)
+            # Если имя таблицы другое, замените "bible" ниже.
+            self.cursor_synodal.execute('''
+                SELECT book, chapter, verse, text FROM verses ORDER BY RANDOM() LIMIT 1
+            ''')
+            row = self.cursor_synodal.fetchone()
+            if not row:
+                return None
+
+            book_num, chapter, verse, text = row
+            # Проверяем, что номер книги в допустимом диапазоне (1-66)
+            if not (1 <= book_num <= 66):
+                return None
+
+            category = "Ветхий Завет" if book_num <= 39 else "Новый Завет"
+            book_name = self.book_names[book_num - 1]
+            return (category, book_name, chapter, verse, text, "Синодальный перевод")
+        except Exception as e:
+            print(f"Ошибка при получении случайного писания: {e}")
+            return None
 
     def get_random_commandment(self):
-        self.cursor.execute('''
+        self.cursor_local.execute('''
             SELECT category, text, reference 
             FROM commandments ORDER BY RANDOM() LIMIT 1
         ''')
-        return self.cursor.fetchone()
+        return self.cursor_local.fetchone()
 
     def search_texts(self, keyword):
-        self.cursor.execute('''
-            SELECT category, book, chapter, verse, text, explanation 
-            FROM texts WHERE text LIKE ? OR explanation LIKE ?
-            LIMIT 10
-        ''', (f'%{keyword}%', f'%{keyword}%'))
-        return self.cursor.fetchall()
+        try:
+            self.cursor_synodal.execute('''
+                SELECT book, chapter, verse, text FROM verses 
+                WHERE text LIKE ? LIMIT 10
+            ''', (f'%{keyword}%',))
+            rows = self.cursor_synodal.fetchall()
+
+            results = []
+            for book_num, chapter, verse, text in rows:
+                if 1 <= book_num <= 66:
+                    category = "Ветхий Завет" if book_num <= 39 else "Новый Завет"
+                    book_name = self.book_names[book_num - 1]
+                    results.append((category, book_name, chapter, verse, text, "Синодальный перевод"))
+            return results
+        except Exception as e:
+            print(f"Ошибка при поиске: {e}")
+            return []
 
     def close(self):
-        self.conn.close()
+        self.conn_synodal.close()
+        self.conn_local.close()
 
 
-# Замените AIWorker в коде на этот вариант
 class AIWorker(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, prompt):
+    def __init__(self, messages, api_key, model="gpt-4.1"):
         super().__init__()
-        self.prompt = prompt
+        self.messages = messages
+        self.api_key = api_key
+        self.model = model
 
     def run(self):
         try:
-            # Используем бесплатный API (например, через RapidAPI)
-            import requests
-
-            # Пример с бесплатным API (может быть медленнее)
-            response = requests.post(
-                'https://open-ai21.p.rapidapi.com/chatgpt',
-                headers={
-                    'x-rapidapi-key': 'ваш_ключ_rapidapi',  # Получите на rapidapi.com
-                    'x-rapidapi-host': 'open-ai21.p.rapidapi.com',
-                    'Content-Type': 'application/json'
-                },
-                json={
-                    'messages': [
-                        {'role': 'user', 'content': self.prompt}
-                    ],
-                    'temperature': 0.7
-                }
+            client = OpenAI(
+                api_key=self.api_key,
+                base_url="https://bothub.chat/api/v2/openai/v1"
             )
-
-            if response.status_code == 200:
-                result = response.json()
-                self.finished.emit(result.get('result', 'Нет ответа'))
-            else:
-                self.error.emit("Ошибка API")
-
+            chat_completion = client.chat.completions.create(
+                model=self.model,
+                messages=self.messages,
+                temperature=0.7
+            )
+            assistant_text = chat_completion.choices[0].message.content
+            self.finished.emit(assistant_text)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -157,56 +163,54 @@ class ChristianReferenceApp(QMainWindow):
         super().__init__()
         self.db = BibleDatabase()
         self.ai_worker = None
-        self.api_key = ""  # Введите ваш API ключ OpenAI
+        self.api_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjM5YjVkN2UwLTZjNTYtNDRhMi1iMGI3LTM2MjBlZTEwODg5NSIsImlzRGV2ZWxvcGVyIjp0cnVlLCJpYXQiOjE3NzM3NTI4MDMsImV4cCI6MjA4OTMyODgwMywianRpIjoib29LV3dZZ2xObzF0VG1QcCJ9.mSxofFHo7fH5Vyfb78uJYlt-lCMnPQ_cBWyKLIXWRO8"
+        self.model = "gpt-4.1"
+        self.messages = [
+            {"role": "system", "content": "Ты православный священник и проповедник. "
+            "Отвечай на вопросы пользователя вдохновенно, с использованием библейских цитат, притч и примеров из жизни святых. "
+            "Твой язык должен быть живым, образным, но при этом уважительным и назидательным. "
+            "Избегай сухих, формальных ответов, как у обычного чат бота. "
+            "Говори как пастырь, который наставляет свою паству."}
+        ]
         self.init_ui()
 
     def init_ui(self):
         self.setWindowTitle("Справочник священника - Христианские писания")
         self.setGeometry(100, 100, 800, 600)
 
-        # Создаем вкладки
         tabs = QTabWidget()
         self.setCentralWidget(tabs)
 
-        # Вкладка случайных писаний
         random_tab = QWidget()
         tabs.addTab(random_tab, "Случайные писания")
         self.setup_random_tab(random_tab)
 
-        # Вкладка заповедей
         commandments_tab = QWidget()
         tabs.addTab(commandments_tab, "Заповеди")
         self.setup_commandments_tab(commandments_tab)
 
-        # Вкладка поиска
         search_tab = QWidget()
         tabs.addTab(search_tab, "Поиск")
         self.setup_search_tab(search_tab)
 
-        # Вкладка AI генерации
         ai_tab = QWidget()
         tabs.addTab(ai_tab, "AI помощник")
         self.setup_ai_tab(ai_tab)
 
-        # Применяем стили
         self.apply_styles()
 
     def setup_random_tab(self, tab):
         layout = QVBoxLayout()
-
-        # Заголовок
         title = QLabel("Случайное писание дня")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         layout.addWidget(title)
 
-        # Текстовое поле для отображения
         self.scripture_display = QTextEdit()
         self.scripture_display.setReadOnly(True)
         self.scripture_display.setFont(QFont("Times", 14))
         layout.addWidget(self.scripture_display)
 
-        # Кнопка генерации
         btn_layout = QHBoxLayout()
         generate_btn = QPushButton("Получить случайное писание")
         generate_btn.clicked.connect(self.generate_random_scripture)
@@ -217,8 +221,6 @@ class ChristianReferenceApp(QMainWindow):
 
     def setup_commandments_tab(self, tab):
         layout = QVBoxLayout()
-
-        # Выбор категории заповедей
         category_layout = QHBoxLayout()
         category_layout.addWidget(QLabel("Категория:"))
 
@@ -228,13 +230,11 @@ class ChristianReferenceApp(QMainWindow):
 
         layout.addLayout(category_layout)
 
-        # Текстовое поле для заповедей
         self.commandments_display = QTextEdit()
         self.commandments_display.setReadOnly(True)
         self.commandments_display.setFont(QFont("Times", 14))
         layout.addWidget(self.commandments_display)
 
-        # Кнопка получения заповеди
         get_cmd_btn = QPushButton("Получить заповедь")
         get_cmd_btn.clicked.connect(self.get_commandment)
         layout.addWidget(get_cmd_btn)
@@ -243,8 +243,6 @@ class ChristianReferenceApp(QMainWindow):
 
     def setup_search_tab(self, tab):
         layout = QVBoxLayout()
-
-        # Поисковая строка
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel("Поиск:"))
 
@@ -258,7 +256,6 @@ class ChristianReferenceApp(QMainWindow):
 
         layout.addLayout(search_layout)
 
-        # Результаты поиска
         self.search_results = QTextEdit()
         self.search_results.setReadOnly(True)
         self.search_results.setFont(QFont("Times", 12))
@@ -268,8 +265,6 @@ class ChristianReferenceApp(QMainWindow):
 
     def setup_ai_tab(self, tab):
         layout = QVBoxLayout()
-
-        # Поле ввода запроса
         layout.addWidget(QLabel("Задайте вопрос священнику:"))
 
         self.ai_input = QTextEdit()
@@ -277,12 +272,10 @@ class ChristianReferenceApp(QMainWindow):
         self.ai_input.setPlaceholderText("Например: Расскажи о любви в христианстве...")
         layout.addWidget(self.ai_input)
 
-        # Кнопка отправки
         ask_btn = QPushButton("Спросить AI")
         ask_btn.clicked.connect(self.ask_ai)
         layout.addWidget(ask_btn)
 
-        # Ответ AI
         layout.addWidget(QLabel("Ответ:"))
         self.ai_response = QTextEdit()
         self.ai_response.setReadOnly(True)
@@ -298,18 +291,17 @@ class ChristianReferenceApp(QMainWindow):
             display_text = f"📖 {book} {chapter}:{verse}\n\n"
             display_text += f"\"{text}\"\n\n"
             display_text += f"📝 Категория: {category}\n"
-            display_text += f"💭 Пояснение: {explanation}"
             self.scripture_display.setText(display_text)
+        else:
+            self.scripture_display.setText(
+                "Не удалось получить писание. Проверьте:\n"
+                "- наличие файла synodal.sqlite в папке с программой;\n"
+                "- имя таблицы (в коде используется 'bible');\n"
+                "- структуру таблицы (поля book, chapter, verse, text)."
+            )
 
     def get_commandment(self):
-        category = self.cmd_category.currentText()
-
-        if category == "Все":
-            commandment = self.db.get_random_commandment()
-        else:
-            # Здесь можно добавить фильтрацию по категории
-            commandment = self.db.get_random_commandment()
-
+        commandment = self.db.get_random_commandment()
         if commandment:
             cat, text, reference = commandment
             display_text = f"⚖️ Заповедь:\n\n\"{text}\"\n\n"
@@ -327,102 +319,54 @@ class ChristianReferenceApp(QMainWindow):
 
         if results:
             display_text = f"Найдено {len(results)} результатов:\n\n"
-            for i, result in enumerate(results, 1):
-                category, book, chapter, verse, text, explanation = result
+            for i, res in enumerate(results, 1):
+                category, book, chapter, verse, text, explanation = res
                 display_text += f"{i}. {book} {chapter}:{verse}\n"
                 display_text += f"   \"{text[:100]}...\"\n\n"
             self.search_results.setText(display_text)
         else:
-            self.search_results.setText("Ничего не найдено")
+            self.search_results.setText("Ничего не найдено (или ошибка при поиске).")
 
     def ask_ai(self):
-        question = self.ai_input.toPlainText()
+        question = self.ai_input.toPlainText().strip()
         if not question:
             QMessageBox.warning(self, "Предупреждение", "Введите вопрос")
             return
 
         if not self.api_key:
-            self.ai_response.setText("⚠️ API ключ не настроен. Пожалуйста, добавьте ваш OpenAI API ключ в код.")
+            self.ai_response.setText("⚠️ API ключ не настроен.")
             return
+
+        messages_to_send = self.messages.copy()
+        messages_to_send.append({"role": "user", "content": question})
 
         self.ai_response.setText("⏳ Ожидайте ответа от AI...")
 
-        # Запускаем AI в отдельном потоке
-        self.ai_worker = AIWorker(question, self.api_key)
+        self.ai_worker = AIWorker(messages_to_send, self.api_key, self.model)
         self.ai_worker.finished.connect(self.on_ai_response)
         self.ai_worker.error.connect(self.on_ai_error)
         self.ai_worker.start()
 
     def on_ai_response(self, response):
         self.ai_response.setText(response)
+        self.messages.append({"role": "assistant", "content": response})
 
     def on_ai_error(self, error_msg):
-        self.ai_response.setText(f"❌ {error_msg}")
+        self.ai_response.setText(f"❌ Ошибка: {error_msg}")
 
     def apply_styles(self):
-        # Устанавливаем светлую тему явно
         self.setStyleSheet("""
-            QMainWindow {
-                background-color: #f0f0f0;
-            }
-            QTabWidget::pane {
-                border: 1px solid #cccccc;
-                background-color: white;
-            }
-            QTabBar::tab {
-                background-color: #e0e0e0;
-                color: black;
-                padding: 8px 16px;
-                margin-right: 2px;
-            }
-            QTabBar::tab:selected {
-                background-color: white;
-                color: black;
-                border-bottom: 2px solid #4a90e2;
-            }
-            QPushButton {
-                background-color: #4a90e2;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #357abd;
-            }
-            QTextEdit {
-                border: 1px solid #cccccc;
-                border-radius: 4px;
-                padding: 8px;
-                background-color: white;
-                color: black;  /* явно устанавливаем черный текст */
-                selection-background-color: #4a90e2;
-                selection-color: white;
-            }
-            QLineEdit {
-                border: 1px solid #cccccc;
-                border-radius: 4px;
-                padding: 6px;
-                background-color: white;
-                color: black;  /* явно устанавливаем черный текст */
-            }
-            QComboBox {
-                border: 1px solid #cccccc;
-                border-radius: 4px;
-                padding: 4px;
-                background-color: white;
-                color: black;  /* явно устанавливаем черный текст */
-            }
-            QComboBox QAbstractItemView {
-                background-color: white;
-                color: black;
-                selection-background-color: #4a90e2;
-                selection-color: white;
-            }
-            QLabel {
-                color: black;  /* явно устанавливаем черный текст */
-            }
+            QMainWindow { background-color: #f0f0f0; }
+            QTabWidget::pane { border: 1px solid #cccccc; background-color: white; }
+            QTabBar::tab { background-color: #e0e0e0; color: black; padding: 8px 16px; margin-right: 2px; }
+            QTabBar::tab:selected { background-color: white; color: black; border-bottom: 2px solid #4a90e2; }
+            QPushButton { background-color: #4a90e2; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; }
+            QPushButton:hover { background-color: #357abd; }
+            QTextEdit { border: 1px solid #cccccc; border-radius: 4px; padding: 8px; background-color: white; color: black; selection-background-color: #4a90e2; selection-color: white; }
+            QLineEdit { border: 1px solid #cccccc; border-radius: 4px; padding: 6px; background-color: white; color: black; }
+            QComboBox { border: 1px solid #cccccc; border-radius: 4px; padding: 4px; background-color: white; color: black; }
+            QComboBox QAbstractItemView { background-color: white; color: black; selection-background-color: #4a90e2; selection-color: white; }
+            QLabel { color: black; }
         """)
 
     def closeEvent(self, event):
@@ -433,10 +377,8 @@ class ChristianReferenceApp(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-
     window = ChristianReferenceApp()
     window.show()
-
     sys.exit(app.exec())
 
 
