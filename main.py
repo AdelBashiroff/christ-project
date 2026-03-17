@@ -141,20 +141,17 @@ class AIWorker(QThread):
         self.model = model
 
     def run(self):
-        try:
-            client = OpenAI(
-                api_key=self.api_key,
-                base_url="https://bothub.chat/api/v2/openai/v1"
-            )
-            chat_completion = client.chat.completions.create(
-                model=self.model,
-                messages=self.messages,
-                temperature=0.7
-            )
-            assistant_text = chat_completion.choices[0].message.content
-            self.finished.emit(assistant_text)
-        except Exception as e:
-            self.error.emit(str(e))
+        client = OpenAI(
+            api_key=self.api_key,
+            base_url="https://bothub.chat/api/v2/openai/v1"
+        )
+        chat_completion = client.chat.completions.create(
+            model=self.model,
+            messages=self.messages,
+            temperature=0.7
+        )
+        assistant_text = chat_completion.choices[0].message.content
+        self.finished.emit(assistant_text)
 
 
 # Главное окно приложения
@@ -340,7 +337,7 @@ class ChristianReferenceApp(QMainWindow):
         messages_to_send = self.messages.copy()
         messages_to_send.append({"role": "user", "content": question})
 
-        self.ai_response.setText("⏳ Ожидайте ответа от AI...")
+        self.ai_response.setText("⏳ Ожидайте, проповедник божий думает над ответом...")
 
         self.ai_worker = AIWorker(messages_to_send, self.api_key, self.model)
         self.ai_worker.finished.connect(self.on_ai_response)
